@@ -6,33 +6,25 @@ import time
 import json
 import os
 import uuid
-import logging
 
 app = Flask(__name__)
 CORS(app)
 
-# -------------------- LOGGING --------------------
-logging.basicConfig(level=logging.DEBUG)
-
-@app.before_request
-def log_request_info():
-    app.logger.debug(f"Request: {request.method} {request.url}")
-    app.logger.debug(f"Headers: {dict(request.headers)}")
-    app.logger.debug(f"Body: {request.get_data()}")
-
-# -------------------- DATA FILE --------------------
 DATA_FILE = "onechat.adithf"
 
 # -------------------- LOAD & SAVE --------------------
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
-            data = json.load(f)
-            # Convert message time back to datetime
-            for gnum in data.get("messages", {}):
-                for m in data["messages"][gnum]:
-                    m["time"] = datetime.fromisoformat(m["time"])
-            return data
+            try:
+                data = json.load(f)
+                # Convert message time back to datetime
+                for gnum in data.get("messages", {}):
+                    for m in data["messages"][gnum]:
+                        m["time"] = datetime.fromisoformat(m["time"])
+                return data
+            except Exception:
+                return {}
     return {
         "users": {
             "adith": {"password": "adith", "name": "adith", "groups": []},
@@ -45,7 +37,7 @@ def load_data():
 
 def save_data():
     with open(DATA_FILE, "w") as f:
-        # Convert datetime to string
+        # Convert datetime to string for saving
         data_copy = {
             "users": users,
             "groups": groups,
@@ -60,14 +52,10 @@ def save_data():
         }
         json.dump(data_copy, f, indent=4)
 
-# Ensure file exists with secure permissions
+# Ensure file exists
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
         f.write("{}")
-    try:
-        os.chmod(DATA_FILE, 0o600)
-    except Exception as e:
-        print("Warning: Could not set file permissions:", e)
 
 # Load data at startup
 data = load_data()
@@ -76,28 +64,19 @@ groups = data.get("groups", {})
 messages = data.get("messages", {})
 sessions = data.get("sessions", {})
 
-# Fast token lookup
-def token_dict():
-    return {v: k for k, v in sessions.items()}
-
 # -------------------- AUTH HELPERS --------------------
 def generate_token():
     return str(uuid.uuid4())
 
 def authenticate(token):
-    return token_dict().get(token)
-
-# -------------------- ROOT --------------------
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"success": True, "message": "Server is running!"})
+    for user, tkn in sessions.items():
+        if tkn == token:
+            return user
+    return None
 
 # -------------------- SIGNUP --------------------
-@app.route("/signup", methods=["GET", "POST"])
-def signup_route():
-    if request.method == "GET":
-        return jsonify({"success": False, "message": "Use POST to signup"}), 405
-
+@app.route("/signup", methods=["POST"])
+def signup():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
@@ -111,11 +90,8 @@ def signup_route():
     return jsonify({"success": True, "message": "Signup successful!"})
 
 # -------------------- LOGIN --------------------
-@app.route("/login", methods=["GET", "POST"])
-def login_route():
-    if request.method == "GET":
-        return jsonify({"success": False, "message": "Use POST to login"}), 405
-
+@app.route("/login", methods=["POST"])
+def login():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
@@ -129,11 +105,8 @@ def login_route():
         return jsonify({"success": False, "message": "Invalid credentials!"}), 401
 
 # -------------------- LOGOUT --------------------
-@app.route("/logout", methods=["GET", "POST"])
-def logout_route():
-    if request.method == "GET":
-        return jsonify({"success": False, "message": "Use POST to logout"}), 405
-
+@app.route("/logout", methods=["POST"])
+def logout():
     data = request.get_json()
     token = data.get("token")
 
@@ -146,11 +119,8 @@ def logout_route():
     return jsonify({"success": True, "message": "Logout successful!"})
 
 # -------------------- CREATE GROUP --------------------
-@app.route("/create_group", methods=["GET", "POST"])
-def create_group_route():
-    if request.method == "GET":
-        return jsonify({"success": False, "message": "Use POST to create group"}), 405
-
+@app.route("/create_group", methods=["POST"])
+def create_group():
     data = request.get_json()
     token = data.get("token")
     group_name = data.get("groupName")
@@ -170,11 +140,8 @@ def create_group_route():
     return jsonify({"success": True, "message": f"Group '{group_name}' created successfully!"})
 
 # -------------------- JOIN GROUP --------------------
-@app.route("/join_group", methods=["GET", "POST"])
-def join_group_route():
-    if request.method == "GET":
-        return jsonify({"success": False, "message": "Use POST to join group"}), 405
-
+@app.route("/join_group", methods=["POST"])
+def join_group():
     data = request.get_json()
     token = data.get("token")
     group_number = data.get("groupNumber")
@@ -192,9 +159,9 @@ def join_group_route():
     save_data()
     return jsonify({"success": True, "message": f"Joined group '{groups[group_number]['name']}' successfully!"})
 
-# -------------------- PROFILE --------------------
+# -------------------- GET PROFILE --------------------
 @app.route("/profile", methods=["POST"])
-def profile_route():
+def get_profile():
     data = request.get_json()
     token = data.get("token")
 
@@ -202,7 +169,12 @@ def profile_route():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    user_groups = [{"name": groups[g]["name"], "number": g} for g in users[user]["groups"] if g in groups]
+    user_groups = []
+    for gnum in users[user]["groups"]:
+        grp = groups.get(gnum)
+        if grp:
+            user_groups.append({"name": grp["name"], "number": gnum})
+
     return jsonify({
         "success": True,
         "username": user,
@@ -212,7 +184,7 @@ def profile_route():
 
 # -------------------- UPDATE PROFILE --------------------
 @app.route("/update_profile", methods=["POST"])
-def update_profile_route():
+def update_profile():
     data = request.get_json()
     token = data.get("token")
     new_name = data.get("newName")
@@ -227,7 +199,7 @@ def update_profile_route():
 
 # -------------------- SEND MESSAGE --------------------
 @app.route("/send_message", methods=["POST"])
-def send_message_route():
+def send_message():
     data = request.get_json()
     token = data.get("token")
     group_number = data.get("groupNumber")
@@ -247,7 +219,7 @@ def send_message_route():
 
 # -------------------- GET MESSAGES --------------------
 @app.route("/get_messages/<group_number>", methods=["POST"])
-def get_messages_route(group_number):
+def get_messages(group_number):
     data = request.get_json()
     token = data.get("token")
 
@@ -261,7 +233,10 @@ def get_messages_route(group_number):
     group_messages = messages.get(group_number, [])
     return jsonify({
         "success": True,
-        "messages": [{"sender": m["sender"], "message": m["message"], "time": m["time"].isoformat()} for m in group_messages]
+        "messages": [
+            {"sender": m["sender"], "message": m["message"], "time": m["time"].isoformat()}
+            for m in group_messages
+        ]
     })
 
 # -------------------- MESSAGE CLEANUP --------------------
@@ -271,10 +246,11 @@ def cleanup_messages():
         for group_num, msgs in messages.items():
             messages[group_num] = [m for m in msgs if now - m["time"] < timedelta(hours=24)]
         save_data()
-        time.sleep(3600)  # every hour
+        time.sleep(3600)  # Run cleanup every hour
 
 threading.Thread(target=cleanup_messages, daemon=True).start()
 
 # -------------------- RUN SERVER --------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))  # Render assigns PORT
+    app.run(host="0.0.0.0", port=port, debug=False)
