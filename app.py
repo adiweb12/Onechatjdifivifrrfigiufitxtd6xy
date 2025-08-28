@@ -74,6 +74,14 @@ def authenticate(token):
             return user
     return None
 
+# -------------------- ROOT --------------------
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "success": True,
+        "message": "🚀 OneChat API is running! Use POST /signup, /login, /create_group, etc."
+    })
+
 # -------------------- SIGNUP --------------------
 @app.route("/signup", methods=["POST"])
 def signup():
