@@ -1,0 +1,14 @@
+{
+    "users": {
+        "ONE": {
+            "password": "onechat",
+            "name": "ONE",
+            "groups": []
+        }
+    },
+    "groups": {},
+    "messages": {},
+    "sessions": {
+        "ONE": "b3aaebb9-235d-416f-aeb0-8ce670e7fd30"
+    }
+}
