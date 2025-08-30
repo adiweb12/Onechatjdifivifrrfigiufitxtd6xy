@@ -3,83 +3,69 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 import threading
 import time
-import json
-import os
 import uuid
+import os
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.dialects.postgresql import JSONB
 
+# -------------------- APP & DB SETUP --------------------
 app = Flask(__name__)
 CORS(app)
 
-DATA_FILE = "onechat.adithf"
+# Replace the file-based configuration with the database URI
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL',
+    'postgresql://onechat_user:g8s5VooJZXmjRfi9wJqpnd8GJGmj7JY7@dpg-d2p73iv5r7bs739bmcp0-a/onechat'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# -------------------- LOAD & SAVE --------------------
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            try:
-                data = json.load(f)
-                # Convert message time back to datetime
-                for gnum in data.get("messages", {}):
-                    for m in data["messages"][gnum]:
-                        m["time"] = datetime.fromisoformat(m["time"])
-                return data
-            except Exception:
-                return {}
-    return {
-        "users": {
-            "adith": {"password": "adith", "name": "adith", "groups": []},
-            "ONE": {"password": "onechat", "name": "ONE", "groups": []}
-        },
-        "groups": {},
-        "messages": {},
-        "sessions": {}
-    }
+db = SQLAlchemy(app)
 
-def save_data():
-    with open(DATA_FILE, "w") as f:
-        # Convert datetime to string for saving
-        data_copy = {
-            "users": users,
-            "groups": groups,
-            "messages": {
-                gnum: [
-                    {"sender": m["sender"], "message": m["message"], "time": m["time"].isoformat()}
-                    for m in msgs
-                ]
-                for gnum, msgs in messages.items()
-            },
-            "sessions": sessions
-        }
-        json.dump(data_copy, f, indent=4)
+# -------------------- DATABASE MODELS --------------------
+class User(db.Model):
+    __tablename__ = 'users'
+    username = db.Column(db.String(50), primary_key=True)
+    password = db.Column(db.String(100), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    groups = db.Column(JSONB, default=[])
 
-# Ensure file exists
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        f.write("{}")
+class Group(db.Model):
+    __tablename__ = 'groups'
+    group_number = db.Column(db.String(50), primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    members = db.Column(JSONB, default=[])
 
-# Load data at startup
-data = load_data()
-users = data.get("users", {})
-groups = data.get("groups", {})
-messages = data.get("messages", {})
-sessions = data.get("sessions", {})
+class Message(db.Model):
+    __tablename__ = 'messages'
+    id = db.Column(db.Integer, primary_key=True)
+    group_number = db.Column(db.String(50), db.ForeignKey('groups.group_number'), nullable=False)
+    sender = db.Column(db.String(50), db.ForeignKey('users.username'), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    time = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+class Session(db.Model):
+    __tablename__ = 'sessions'
+    username = db.Column(db.String(50), primary_key=True, unique=True)
+    token = db.Column(db.String(200), nullable=False)
 
 # -------------------- AUTH HELPERS --------------------
 def generate_token():
     return str(uuid.uuid4())
 
 def authenticate(token):
-    for user, tkn in sessions.items():
-        if tkn == token:
-            return user
-    return None
+    session = Session.query.filter_by(token=token).first()
+    return session.username if session else None
+
+# -------------------- DATABASE CREATION --------------------
+with app.app_context():
+    db.create_all()
 
 # -------------------- ROOT --------------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "success": True,
-        "message": "🚀 OneChat API is running! Use POST /signup, /login, /create_group, etc."
+        "message": "🚀 OneChat API is running! Database connection active."
     })
 
 # -------------------- SIGNUP --------------------
@@ -90,11 +76,12 @@ def signup():
     password = data.get("password")
     name = data.get("name", username)
 
-    if username in users:
+    if User.query.get(username):
         return jsonify({"success": False, "message": "Username already exists!"}), 400
 
-    users[username] = {"password": password, "name": name, "groups": []}
-    save_data()
+    new_user = User(username=username, password=password, name=name, groups=[])
+    db.session.add(new_user)
+    db.session.commit()
     return jsonify({"success": True, "message": "Signup successful!"})
 
 # -------------------- LOGIN --------------------
@@ -104,10 +91,16 @@ def login():
     username = data.get("username")
     password = data.get("password")
 
-    if username in users and users[username]["password"] == password:
+    user = User.query.get(username)
+    if user and user.password == password:
         token = generate_token()
-        sessions[username] = token
-        save_data()
+        session = Session.query.get(username)
+        if session:
+            session.token = token
+        else:
+            new_session = Session(username=username, token=token)
+            db.session.add(new_session)
+        db.session.commit()
         return jsonify({"success": True, "message": "Login successful!", "token": token})
     else:
         return jsonify({"success": False, "message": "Invalid credentials!"}), 401
@@ -118,12 +111,12 @@ def logout():
     data = request.get_json()
     token = data.get("token")
 
-    user = authenticate(token)
-    if not user:
+    session = Session.query.filter_by(token=token).first()
+    if not session:
         return jsonify({"success": False, "message": "Invalid token!"}), 401
 
-    sessions.pop(user, None)
-    save_data()
+    db.session.delete(session)
+    db.session.commit()
     return jsonify({"success": True, "message": "Logout successful!"})
 
 # -------------------- CREATE GROUP --------------------
@@ -138,13 +131,17 @@ def create_group():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    if group_number in groups:
+    if Group.query.get(group_number):
         return jsonify({"success": False, "message": "Group number already exists!"}), 400
 
-    groups[group_number] = {"name": group_name, "members": [user]}
-    users[user]["groups"].append(group_number)
-    messages[group_number] = []
-    save_data()
+    new_group = Group(group_number=group_number, name=group_name, members=[user])
+    db.session.add(new_group)
+
+    user_obj = User.query.get(user)
+    if user_obj:
+        user_obj.groups.append(group_number)
+
+    db.session.commit()
     return jsonify({"success": True, "message": f"Group '{group_name}' created successfully!"})
 
 # -------------------- JOIN GROUP --------------------
@@ -158,14 +155,18 @@ def join_group():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    if group_number not in groups:
+    group = Group.query.get(group_number)
+    if not group:
         return jsonify({"success": False, "message": "Group not found!"}), 404
 
-    if user not in groups[group_number]["members"]:
-        groups[group_number]["members"].append(user)
-        users[user]["groups"].append(group_number)
-    save_data()
-    return jsonify({"success": True, "message": f"Joined group '{groups[group_number]['name']}' successfully!"})
+    if user not in group.members:
+        group.members.append(user)
+        user_obj = User.query.get(user)
+        if user_obj:
+            user_obj.groups.append(group_number)
+    
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Joined group '{group.name}' successfully!"})
 
 # -------------------- GET PROFILE --------------------
 @app.route("/profile", methods=["POST"])
@@ -177,16 +178,18 @@ def get_profile():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
+    user_obj = User.query.get(user)
     user_groups = []
-    for gnum in users[user]["groups"]:
-        grp = groups.get(gnum)
-        if grp:
-            user_groups.append({"name": grp["name"], "number": gnum})
+    if user_obj:
+        for gnum in user_obj.groups:
+            grp = Group.query.get(gnum)
+            if grp:
+                user_groups.append({"name": grp.name, "number": gnum})
 
     return jsonify({
         "success": True,
         "username": user,
-        "name": users[user]["name"],
+        "name": user_obj.name,
         "groups": user_groups
     })
 
@@ -201,8 +204,11 @@ def update_profile():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    users[user]["name"] = new_name
-    save_data()
+    user_obj = User.query.get(user)
+    if user_obj:
+        user_obj.name = new_name
+        db.session.commit()
+
     return jsonify({"success": True, "message": "Profile updated successfully!"})
 
 # -------------------- SEND MESSAGE --------------------
@@ -217,12 +223,17 @@ def send_message():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    if group_number not in groups:
+    if not Group.query.get(group_number):
         return jsonify({"success": False, "message": "Group not found!"}), 404
 
-    message = {"sender": user, "message": text, "time": datetime.utcnow()}
-    messages[group_number].append(message)
-    save_data()
+    new_message = Message(
+        sender=user,
+        message=text,
+        group_number=group_number,
+        time=datetime.utcnow()
+    )
+    db.session.add(new_message)
+    db.session.commit()
     return jsonify({"success": True, "message": "Message sent!"})
 
 # -------------------- GET MESSAGES --------------------
@@ -235,30 +246,29 @@ def get_messages(group_number):
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
-    if group_number not in groups:
-        return jsonify({"success": False, "message": "Group not found!"}), 404
-
-    group_messages = messages.get(group_number, [])
+    group_messages = Message.query.filter_by(group_number=group_number).order_by(Message.time.asc()).all()
+    
     return jsonify({
         "success": True,
         "messages": [
-            {"sender": m["sender"], "message": m["message"], "time": m["time"].isoformat()}
+            {"sender": m.sender, "message": m.message, "time": m.time.isoformat()}
             for m in group_messages
         ]
     })
 
 # -------------------- MESSAGE CLEANUP --------------------
 def cleanup_messages():
-    while True:
-        now = datetime.utcnow()
-        for group_num, msgs in messages.items():
-            messages[group_num] = [m for m in msgs if now - m["time"] < timedelta(hours=24)]
-        save_data()
-        time.sleep(3600)  # Run cleanup every hour
+    with app.app_context():
+        while True:
+            now = datetime.utcnow()
+            twenty_four_hours_ago = now - timedelta(hours=24)
+            Message.query.filter(Message.time < twenty_four_hours_ago).delete(synchronize_session='fetch')
+            db.session.commit()
+            time.sleep(3600)  # Run cleanup every hour
 
 threading.Thread(target=cleanup_messages, daemon=True).start()
 
 # -------------------- RUN SERVER --------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render assigns PORT
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
