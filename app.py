@@ -12,7 +12,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 app = Flask(__name__)
 CORS(app)
 
-# Replace the file-based configuration with the database URI
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL',
     'postgresql://onechat_user:g8s5VooJZXmjRfi9wJqpnd8GJGmj7JY7@dpg-d2p73iv5r7bs739bmcp0-a/onechat'
@@ -75,6 +74,9 @@ def signup():
     username = data.get("username")
     password = data.get("password")
     name = data.get("name", username)
+
+    if not username or not password or not name:
+        return jsonify({"success": False, "message": "Missing fields!"}), 400
 
     if User.query.get(username):
         return jsonify({"success": False, "message": "Username already exists!"}), 400
@@ -139,7 +141,7 @@ def create_group():
 
     user_obj = User.query.get(user)
     if user_obj:
-        user_obj.groups.append(group_number)
+        user_obj.groups = user_obj.groups + [group_number]
 
     db.session.commit()
     return jsonify({"success": True, "message": f"Group '{group_name}' created successfully!"})
@@ -163,7 +165,7 @@ def join_group():
         group.members.append(user)
         user_obj = User.query.get(user)
         if user_obj:
-            user_obj.groups.append(group_number)
+            user_obj.groups = user_obj.groups + [group_number]
     
     db.session.commit()
     return jsonify({"success": True, "message": f"Joined group '{group.name}' successfully!"})
