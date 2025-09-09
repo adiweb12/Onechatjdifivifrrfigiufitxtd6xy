@@ -14,7 +14,7 @@ CORS(app)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL',
-    'postgresql://onechat_user:g8s5VooJZXmjRfi9wJqpnd8GJGmj7JY7@dpg-d2p73iv5r7bs739bmcp0-a/onechat'
+    'postgresql://onechat_ljdu_user:XQUs1Q4QMK8yr5dOfsXv7GZFwH1TZ1aE@dpg-d302inndiees738thco0-a/onechat_ljdu'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
