@@ -1,4 +1,3 @@
-# server.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -14,9 +13,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 CORS(app)
 
+# NOTE: Replace with your actual connection string if deploying
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL',
-    'postgresql://onechat_base_user:S8Kei032FMjpYWEqMTGOkWcUSLybWRuX@dpg-d3ec8633fgac73812tj0-a/onechat_base'
+    'postgresql://onechatbase_user:tgFQcyZcgFySL1qcBX4lFy0VSsCLp9oo@dpg-d3echfili9vc739i98kg-a/onechatbase'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -81,6 +81,9 @@ def signup():
 
     if not username or not password or not name:
         return jsonify({"success": False, "message": "Missing fields!"}), 400
+    
+    if len(password) < 6: # Basic server-side password length check
+        return jsonify({"success": False, "message": "Password must be at least 6 characters long."}), 400
 
     if User.query.get(username):
         return jsonify({"success": False, "message": "Username already exists!"}), 400
@@ -244,6 +247,10 @@ def send_message():
 
     if not Group.query.get(group_number):
         return jsonify({"success": False, "message": "Group not found!"}), 404
+    
+    if not text:
+        return jsonify({"success": False, "message": "Message cannot be empty!"}), 400
+
 
     new_message = Message(
         sender=user,
@@ -282,6 +289,7 @@ def cleanup_messages():
             try:
                 now = datetime.utcnow()
                 twenty_four_hours_ago = now - timedelta(hours=24)
+                # Ensure only messages older than 24 hours are deleted
                 Message.query.filter(Message.time < twenty_four_hours_ago).delete(synchronize_session='fetch')
                 db.session.commit()
             except Exception as e:
@@ -294,4 +302,5 @@ threading.Thread(target=cleanup_messages, daemon=True).start()
 # -------------------- RUN SERVER --------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # Note: debug=True should be False in production
     app.run(host="0.0.0.0", port=port, debug=True)
