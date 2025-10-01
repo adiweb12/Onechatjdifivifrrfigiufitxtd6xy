@@ -1,3 +1,4 @@
+# server.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ import uuid
 import os
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.dialects.postgresql import JSONB
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # -------------------- APP & DB SETUP --------------------
 app = Flask(__name__)
@@ -14,7 +16,7 @@ CORS(app)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL',
-    'postgresql://onechat_ljdu_user:XQUs1Q4QMK8yr5dOfsXv7GZFwH1TZ1aE@dpg-d302inndiees738thco0-a/onechat_ljdu'
+    'postgresql://onechat_base_user:S8Kei032FMjpYWEqMTGOkWcUSLybWRuX@dpg-d3ec8633fgac73812tj0-a/onechat_base'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -24,15 +26,15 @@ db = SQLAlchemy(app)
 class User(db.Model):
     __tablename__ = 'users'
     username = db.Column(db.String(50), primary_key=True)
-    password = db.Column(db.String(100), nullable=False)
+    password = db.Column(db.String(200), nullable=False)  # hashed
     name = db.Column(db.String(100), nullable=False)
-    groups = db.Column(JSONB, default=[])
+    groups = db.Column(JSONB, default=list)
 
 class Group(db.Model):
     __tablename__ = 'groups'
     group_number = db.Column(db.String(50), primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    members = db.Column(JSONB, default=[])
+    members = db.Column(JSONB, default=list)
 
 class Message(db.Model):
     __tablename__ = 'messages'
@@ -52,6 +54,8 @@ def generate_token():
     return str(uuid.uuid4())
 
 def authenticate(token):
+    if not token:
+        return None
     session = Session.query.filter_by(token=token).first()
     return session.username if session else None
 
@@ -70,7 +74,7 @@ def home():
 # -------------------- SIGNUP --------------------
 @app.route("/signup", methods=["POST"])
 def signup():
-    data = request.get_json()
+    data = request.get_json() or {}
     username = data.get("username")
     password = data.get("password")
     name = data.get("name", username)
@@ -81,7 +85,8 @@ def signup():
     if User.query.get(username):
         return jsonify({"success": False, "message": "Username already exists!"}), 400
 
-    new_user = User(username=username, password=password, name=name, groups=[])
+    hashed = generate_password_hash(password)
+    new_user = User(username=username, password=hashed, name=name, groups=[])
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"success": True, "message": "Signup successful!"})
@@ -89,12 +94,15 @@ def signup():
 # -------------------- LOGIN --------------------
 @app.route("/login", methods=["POST"])
 def login():
-    data = request.get_json()
+    data = request.get_json() or {}
     username = data.get("username")
     password = data.get("password")
 
+    if not username or not password:
+        return jsonify({"success": False, "message": "Missing fields!"}), 400
+
     user = User.query.get(username)
-    if user and user.password == password:
+    if user and check_password_hash(user.password, password):
         token = generate_token()
         session = Session.query.get(username)
         if session:
@@ -110,8 +118,10 @@ def login():
 # -------------------- LOGOUT --------------------
 @app.route("/logout", methods=["POST"])
 def logout():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
+    if not token:
+        return jsonify({"success": False, "message": "Missing token!"}), 400
 
     session = Session.query.filter_by(token=token).first()
     if not session:
@@ -124,7 +134,7 @@ def logout():
 # -------------------- CREATE GROUP --------------------
 @app.route("/create_group", methods=["POST"])
 def create_group():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
     group_name = data.get("groupName")
     group_number = data.get("groupNumber")
@@ -133,6 +143,9 @@ def create_group():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
+    if not group_name or not group_number:
+        return jsonify({"success": False, "message": "Missing fields!"}), 400
+
     if Group.query.get(group_number):
         return jsonify({"success": False, "message": "Group number already exists!"}), 400
 
@@ -140,8 +153,8 @@ def create_group():
     db.session.add(new_group)
 
     user_obj = User.query.get(user)
-    if user_obj:
-        user_obj.groups = user_obj.groups + [group_number]
+    if user_obj and group_number not in (user_obj.groups or []):
+        user_obj.groups = (user_obj.groups or []) + [group_number]
 
     db.session.commit()
     return jsonify({"success": True, "message": f"Group '{group_name}' created successfully!"})
@@ -149,7 +162,7 @@ def create_group():
 # -------------------- JOIN GROUP --------------------
 @app.route("/join_group", methods=["POST"])
 def join_group():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
     group_number = data.get("groupNumber")
 
@@ -157,23 +170,27 @@ def join_group():
     if not user:
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
+    if not group_number:
+        return jsonify({"success": False, "message": "Missing group number!"}), 400
+
     group = Group.query.get(group_number)
     if not group:
         return jsonify({"success": False, "message": "Group not found!"}), 404
 
-    if user not in group.members:
-        group.members.append(user)
-        user_obj = User.query.get(user)
-        if user_obj:
-            user_obj.groups = user_obj.groups + [group_number]
-    
+    if user not in (group.members or []):
+        group.members = (group.members or []) + [user]
+
+    user_obj = User.query.get(user)
+    if user_obj and group_number not in (user_obj.groups or []):
+        user_obj.groups = (user_obj.groups or []) + [group_number]
+
     db.session.commit()
     return jsonify({"success": True, "message": f"Joined group '{group.name}' successfully!"})
 
 # -------------------- GET PROFILE --------------------
 @app.route("/profile", methods=["POST"])
 def get_profile():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
 
     user = authenticate(token)
@@ -183,7 +200,7 @@ def get_profile():
     user_obj = User.query.get(user)
     user_groups = []
     if user_obj:
-        for gnum in user_obj.groups:
+        for gnum in (user_obj.groups or []):
             grp = Group.query.get(gnum)
             if grp:
                 user_groups.append({"name": grp.name, "number": gnum})
@@ -191,14 +208,14 @@ def get_profile():
     return jsonify({
         "success": True,
         "username": user,
-        "name": user_obj.name,
+        "name": user_obj.name if user_obj else "",
         "groups": user_groups
     })
 
 # -------------------- UPDATE PROFILE --------------------
 @app.route("/update_profile", methods=["POST"])
 def update_profile():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
     new_name = data.get("newName")
 
@@ -208,7 +225,7 @@ def update_profile():
 
     user_obj = User.query.get(user)
     if user_obj:
-        user_obj.name = new_name
+        user_obj.name = new_name or user_obj.name
         db.session.commit()
 
     return jsonify({"success": True, "message": "Profile updated successfully!"})
@@ -216,7 +233,7 @@ def update_profile():
 # -------------------- SEND MESSAGE --------------------
 @app.route("/send_message", methods=["POST"])
 def send_message():
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
     group_number = data.get("groupNumber")
     text = data.get("message")
@@ -241,7 +258,7 @@ def send_message():
 # -------------------- GET MESSAGES --------------------
 @app.route("/get_messages/<group_number>", methods=["POST"])
 def get_messages(group_number):
-    data = request.get_json()
+    data = request.get_json() or {}
     token = data.get("token")
 
     user = authenticate(token)
@@ -249,7 +266,7 @@ def get_messages(group_number):
         return jsonify({"success": False, "message": "Unauthorized!"}), 401
 
     group_messages = Message.query.filter_by(group_number=group_number).order_by(Message.time.asc()).all()
-    
+
     return jsonify({
         "success": True,
         "messages": [
@@ -262,10 +279,14 @@ def get_messages(group_number):
 def cleanup_messages():
     with app.app_context():
         while True:
-            now = datetime.utcnow()
-            twenty_four_hours_ago = now - timedelta(hours=24)
-            Message.query.filter(Message.time < twenty_four_hours_ago).delete(synchronize_session='fetch')
-            db.session.commit()
+            try:
+                now = datetime.utcnow()
+                twenty_four_hours_ago = now - timedelta(hours=24)
+                Message.query.filter(Message.time < twenty_four_hours_ago).delete(synchronize_session='fetch')
+                db.session.commit()
+            except Exception as e:
+                app.logger.exception("Cleanup thread error: %s", e)
+                db.session.rollback()
             time.sleep(3600)  # Run cleanup every hour
 
 threading.Thread(target=cleanup_messages, daemon=True).start()
