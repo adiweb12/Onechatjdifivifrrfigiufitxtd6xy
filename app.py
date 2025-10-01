@@ -16,7 +16,7 @@ CORS(app)
 # NOTE: Replace with your actual connection string if deploying
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     'DATABASE_URL',
-    'postgresql://onechatbase_user:tgFQcyZcgFySL1qcBX4lFy0VSsCLp9oo@dpg-d3echfili9vc739i98kg-a/onechatbase'
+    'postgresql://onechat_nhc9_user:JoXwS5h0cfjKLYVV0XMeaXsqhgWBKxjm@dpg-d3efbpggjchc738litc0-a/onechat_nhc9'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -35,6 +35,8 @@ class Group(db.Model):
     group_number = db.Column(db.String(50), primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     members = db.Column(JSONB, default=list)
+    # ⚠️ ADDED: To track the group admin/creator
+    creator = db.Column(db.String(50), db.ForeignKey('users.username'), nullable=False) 
 
 class Message(db.Model):
     __tablename__ = 'messages'
@@ -152,7 +154,8 @@ def create_group():
     if Group.query.get(group_number):
         return jsonify({"success": False, "message": "Group number already exists!"}), 400
 
-    new_group = Group(group_number=group_number, name=group_name, members=[user])
+    # ⚠️ ADDED 'creator' field
+    new_group = Group(group_number=group_number, name=group_name, members=[user], creator=user)
     db.session.add(new_group)
 
     user_obj = User.query.get(user)
@@ -190,6 +193,82 @@ def join_group():
     db.session.commit()
     return jsonify({"success": True, "message": f"Joined group '{group.name}' successfully!"})
 
+# -------------------- LEAVE GROUP --------------------
+@app.route("/leave_group", methods=["POST"])
+def leave_group():
+    data = request.get_json() or {}
+    token = data.get("token")
+    group_number = data.get("groupNumber")
+
+    user = authenticate(token)
+    if not user:
+        return jsonify({"success": False, "message": "Unauthorized!"}), 401
+
+    group = Group.query.get(group_number)
+    user_obj = User.query.get(user)
+
+    if not group or not user_obj:
+        return jsonify({"success": False, "message": "Group or User not found!"}), 404
+
+    # Remove user from group members
+    if user in (group.members or []):
+        group.members.remove(user)
+
+    # Remove group from user's groups list
+    if group_number in (user_obj.groups or []):
+        user_obj.groups.remove(group_number)
+
+    # Check if the user was the creator and if the group is now empty
+    if group.creator == user:
+        if not group.members:
+            # If creator leaves and no one is left, delete the group
+            Message.query.filter_by(group_number=group_number).delete()
+            db.session.delete(group)
+            db.session.commit()
+            return jsonify({"success": True, "message": "Group left and deleted (group was empty)!"})
+        else:
+            # If creator leaves and others are left, assign a new creator
+            group.creator = group.members[0] # Assign first member as new creator
+            db.session.commit()
+            return jsonify({"success": True, "message": f"Group left. New admin: {group.creator}"})
+    else:
+        db.session.commit()
+        return jsonify({"success": True, "message": "Group left successfully!"})
+
+# -------------------- DELETE GROUP --------------------
+@app.route("/delete_group", methods=["POST"])
+def delete_group():
+    data = request.get_json() or {}
+    token = data.get("token")
+    group_number = data.get("groupNumber")
+
+    user = authenticate(token)
+    if not user:
+        return jsonify({"success": False, "message": "Unauthorized!"}), 401
+
+    group = Group.query.get(group_number)
+    if not group:
+        return jsonify({"success": False, "message": "Group not found!"}), 404
+
+    # Authorization Check: Only the creator can delete the group
+    if group.creator != user:
+        return jsonify({"success": False, "message": "Only the group admin can delete the group!"}), 403
+
+    # Remove group from all members' group lists
+    for member_username in (group.members or []):
+        member = User.query.get(member_username)
+        if member and group_number in (member.groups or []):
+            member.groups.remove(group_number)
+
+    # Delete all messages in the group
+    Message.query.filter_by(group_number=group_number).delete()
+
+    # Delete the group itself
+    db.session.delete(group)
+    db.session.commit()
+    return jsonify({"success": True, "message": f"Group '{group.name}' and all messages deleted successfully!"})
+
+
 # -------------------- GET PROFILE --------------------
 @app.route("/profile", methods=["POST"])
 def get_profile():
@@ -206,7 +285,9 @@ def get_profile():
         for gnum in (user_obj.groups or []):
             grp = Group.query.get(gnum)
             if grp:
-                user_groups.append({"name": grp.name, "number": gnum})
+                # ⚠️ ADDED: 'is_creator' flag to group object
+                is_creator = grp.creator == user
+                user_groups.append({"name": grp.name, "number": gnum, "is_creator": is_creator})
 
     return jsonify({
         "success": True,
